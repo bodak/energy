@@ -37,6 +37,11 @@ class Electricity:
     agile_standing_charge: float
     agile_rate_url: str
 
+    @property
+    def url(self):
+        return 'https://api.octopus.energy/v1/electricity-meter-points/' \
+            f'{self.mpan}/meters/{self.serial_number}/consumption/'
+
 
 @dataclass
 class Gas:
@@ -47,6 +52,11 @@ class Gas:
     meter_type: int
     volume_correction_factor: float
     calorific_value: float
+
+    @property
+    def url(self):
+        return 'https://api.octopus.energy/v1/gas-meter-points/' \
+            f'{self.mpan}/meters/{self.serial_number}/consumption/'
 
 
 @dataclass
@@ -207,9 +217,7 @@ def main(
 
     from_iso = maya.when(from_date, timezone=config.electricity.unit_rate_time_zone).iso8601()
     to_iso = maya.when(to_date, timezone=config.electricity.unit_rate_time_zone).iso8601()
-    e_url = 'https://api.octopus.energy/v1/electricity-meter-points/' \
-            f'{config.electricity.mpan}/meters/{config.electricity.serial_number}/consumption/'
-    e_consumption = retrieve_paginated_data(config.octopus.api_key, e_url, from_iso, to_iso)
+    e_consumption = retrieve_paginated_data(config.octopus.api_key, config.electricity.url, from_iso, to_iso)
     # rate_data['electricity']['agile_unit_rates'] = retrieve_paginated_data(
     #     api_key, agile_url, from_iso, to_iso
     # )
@@ -217,9 +225,7 @@ def main(
     json.dump(
         {"use": e_consumption, "rate": rate_data["electricity"]}, open("elec.json", "w")
     )
-    g_url = 'https://api.octopus.energy/v1/gas-meter-points/' \
-            f'{config.gas.mpan}/meters/{config.gas.serial_number}/consumption/'
-    g_consumption = retrieve_paginated_data(config.octopus.api_key, g_url, from_iso, to_iso)
+    g_consumption = retrieve_paginated_data(config.octopus.api_key, config.gas.url, from_iso, to_iso)
     json.dump({"use": g_consumption, "rate": rate_data["gas"]}, open("gas.json", "w"))
     # store_series(write_api, influx_version, org, bucket, 'gas', g_consumption, rate_data['gas'])
 
