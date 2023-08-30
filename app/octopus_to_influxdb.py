@@ -6,8 +6,8 @@ from urllib import parse
 import click
 import maya
 import requests
-from influxdb import InfluxDBClient
-
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 def retrieve_paginated_data(
         api_key, url, from_date, to_date, page=None
@@ -31,8 +31,7 @@ def retrieve_paginated_data(
     return results
 
 
-def store_series(connection, series, metrics, rate_data):
-
+def store_series(connection, version, org, bucket, series, metrics, rate_data):
     agile_data = rate_data.get('agile_unit_rates', [])
     agile_rates = {
         point['valid_to']: point['value_inc_vat']
@@ -63,27 +62,10 @@ def store_series(connection, series, metrics, rate_data):
             ),
             timezone=low_zone
         )
-        if low_start > low_end:
-            # end time is the following day
-            low_end_d1 = maya.when(
-                measurement_at.datetime(to_timezone=low_zone).strftime(
-                    f'%Y-%m-%dT23:59:59'
-                ),
-                timezone=low_zone
-            )
-            low_start_d2 = maya.when(
-                measurement_at.datetime(to_timezone=low_zone).strftime(
-                    f'%Y-%m-%dT00:00:00'
-                ),
-                timezone=low_zone
-            )
-            low_period_a = maya.MayaInterval(low_start, low_end_d1)
-            low_period_b = maya.MayaInterval(low_start_d2, low_end)
-        else:
-            low_period_a = low_period_b = maya.MayaInterval(low_start, low_end)
+        low_period = maya.MayaInterval(low_start, low_end)
+
         return \
-            'unit_rate_low' if measurement_at in low_period_a \
-                or measurement_at in low_period_b \
+            'unit_rate_low' if measurement_at in low_period \
             else 'unit_rate_high'
 
     def fields_for_measurement(measurement):
@@ -131,7 +113,7 @@ def store_series(connection, series, metrics, rate_data):
         }
         for measurement in metrics
     ]
-    connection.write_points(measurements)
+    connection.write(bucket, org, measurements)
 
 
 @click.command()
@@ -140,20 +122,23 @@ def store_series(connection, series, metrics, rate_data):
     default="octograph.ini",
     type=click.Path(exists=True, dir_okay=True, readable=True),
 )
-@click.option('--from-date', default='yesterday midnight', type=click.STRING)
+@click.option('--from-date', default='1 week ago midnight', type=click.STRING)
 @click.option('--to-date', default='today midnight', type=click.STRING)
 def cmd(config_file, from_date, to_date):
 
     config = ConfigParser()
     config.read(config_file)
 
+    org=config.get('influxdb', 'org', fallback="")
+    bucket=config.get('influxdb', 'bucket', fallback="energy")
+    influx_version=(config.getint('influxdb', 'version', fallback=2))
+
     influx = InfluxDBClient(
-        host=config.get('influxdb', 'host', fallback="localhost"),
-        port=config.getint('influxdb', 'port', fallback=8086),
-        username=config.get('influxdb', 'user', fallback=""),
-        password=config.get('influxdb', 'password', fallback=""),
-        database=config.get('influxdb', 'database', fallback="energy"),
-    )
+            url=config.get('influxdb', 'url', fallback="http://localhost:8086"),
+            token=config.get('influxdb', 'token', fallback=""),
+            org=org,
+        )
+    write_api = influx.write_api(write_options=SYNCHRONOUS)
 
     api_key = config.get('octopus', 'api_key')
     if not api_key:
@@ -223,15 +208,15 @@ def cmd(config_file, from_date, to_date):
         api_key, e_url, from_iso, to_iso
     )
     click.echo(f' {len(e_consumption)} readings.')
-    click.echo(
-        f'Retrieving Agile rates for {from_iso} until {to_iso}...',
-        nl=False
-    )
-    rate_data['electricity']['agile_unit_rates'] = retrieve_paginated_data(
-        api_key, agile_url, from_iso, to_iso
-    )
+    # click.echo(
+    #     f'Retrieving Agile rates for {from_iso} until {to_iso}...',
+    #     nl=False
+    # )
+    # rate_data['electricity']['agile_unit_rates'] = retrieve_paginated_data(
+    #     api_key, agile_url, from_iso, to_iso
+    # )
     click.echo(f' {len(rate_data["electricity"]["agile_unit_rates"])} rates.')
-    store_series(influx, 'electricity', e_consumption, rate_data['electricity'])
+    store_series(write_api, influx_version, org, bucket, 'electricity', e_consumption, rate_data['electricity'])
 
     click.echo(
         f'Retrieving gas data for {from_iso} until {to_iso}...',
@@ -241,7 +226,7 @@ def cmd(config_file, from_date, to_date):
         api_key, g_url, from_iso, to_iso
     )
     click.echo(f' {len(g_consumption)} readings.')
-    store_series(influx, 'gas', g_consumption, rate_data['gas'])
+    store_series(write_api, influx_version, org, bucket, 'gas', g_consumption, rate_data['gas'])
 
 
 if __name__ == '__main__':

@@ -1,12 +1,9 @@
 FROM python:3.9-slim
-
-LABEL maintainer="Stephen Newey <github@s-n.me>"
-
 WORKDIR /usr/src/app
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY octopus_to_influxdb.py ./
 
-ENTRYPOINT [ "python", "./octopus_to_influxdb.py" ]
+ENTRYPOINT [ "python3", "./octopus_to_influxdb.py" ]
