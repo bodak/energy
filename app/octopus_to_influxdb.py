@@ -6,7 +6,7 @@ from urllib import parse
 import maya
 import requests
 import yaml
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
@@ -28,14 +28,13 @@ class Octopus:
 class Electricity:
     mpan: int
     serial_number: str
-    standing_charge: float
     unit_rate_high: float
     unit_rate_low: float
     unit_rate_low_start: str
     unit_rate_low_end: str
     unit_rate_time_zone: str
-    agile_standing_charge: float
-    agile_rate_url: str
+    standing_charge_url: str
+    rate_url: str
 
     @property
     def url(self):
@@ -82,22 +81,33 @@ class Config:
         return Config(**data)
 
 
-def extract(api_key, url, from_date, to_date, page=None):
-    args = {
-        "period_from": from_date,
-        "period_to": to_date,
-    }
-    if page:
-        args["page"] = page
-    response = requests.get(url, params=args, auth=(api_key, ""))
-    response.raise_for_status()
-    data = response.json()
-    results = data.get("results", [])
-    if data["next"]:
-        url_query = parse.urlparse(data["next"]).query
-        next_page = parse.parse_qs(url_query)["page"][0]
-        results += extract(api_key, url, from_date, to_date, next_page)
-    return results
+def extract(api_key, series, from_date, to_date):
+    def extract_paginated(api_key, url, from_date, to_date, page=None):
+        args = {
+            "period_from": from_date,
+            "period_to": to_date,
+        }
+        if page:
+            args["page"] = page
+        response = requests.get(url, params=args, auth=(api_key, ""))
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("results", [])
+        if data["next"]:
+            url_query = parse.urlparse(data["next"]).query
+            next_page = parse.parse_qs(url_query)["page"][0]
+            results += extract_paginated(api_key, url, from_date, to_date, next_page)
+        return results
+
+    consumption = extract_paginated(api_key, series.url, from_date, to_date)
+    standing_charge = (
+        requests.get(series.standing_charge_url, auth=(api_key, ""))
+        .json()
+        .get("results", [])[0].get("value_inc_vat", 0)
+        if hasattr(series, "standing_charge_url")
+        else series.standing_charge
+    )
+    return consumption, standing_charge
 
 
 def transform(series, metrics, rate_data):
@@ -203,19 +213,14 @@ def main(
 
     rate_data = {
         "electricity": {
-            "standing_charge": config.electricity.standing_charge,
             "unit_rate_high": config.electricity.unit_rate_high,
             "unit_rate_low": config.electricity.unit_rate_low,
             "unit_rate_low_start": config.electricity.unit_rate_low_start,
             "unit_rate_low_end": config.electricity.unit_rate_low_end,
             "unit_rate_low_zone": config.electricity.unit_rate_time_zone,
-            "agile_standing_charge": config.electricity.agile_standing_charge,
-            "agile_unit_rates": [],
         },
         "gas": {
-            "standing_charge": config.gas.standing_charge,
             "unit_rate": config.gas.unit_rate,
-            # SMETS1 meters report kWh, SMET2 report m^3 and need converting to kWh first
             "conversion_factor": config.gas.volume_correction_factor
             * config.gas.calorific_value
             / 3.6
@@ -230,15 +235,17 @@ def main(
     to_iso = maya.when(
         to_date, timezone=config.electricity.unit_rate_time_zone
     ).iso8601()
-    electricity = extract(
-        config.octopus.api_key, config.electricity.url, from_iso, to_iso
+    electricity, rate_data["electricity"]["standing_charge"] = extract(
+        config.octopus.api_key, config.electricity, from_iso, to_iso
     )
-    # rate_data['electricity']['agile_unit_rates'] = retrieve_paginated_data(
-    #     api_key, agile_url, from_iso, to_iso
+    # prices = extract(
+    # config.octopus.api_key, config., from_iso, to_iso
     # )
     electricity = transform("electricity", electricity, rate_data["electricity"])
     load(connection, config, electricity, "electricity")
-    gas = extract(config.octopus.api_key, config.gas.url, from_iso, to_iso)
+    gas, rate_data["gas"]["standing_charge"] = extract(
+        config.octopus.api_key, config.gas, from_iso, to_iso
+    )
     gas = transform("gas", gas, rate_data["gas"])
     load(connection, config, gas, "gas")
 
