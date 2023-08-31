@@ -61,6 +61,14 @@ class Gas:
             f"{self.mpan}/meters/{self.serial_number}/consumption/"
         )
 
+    @property
+    def conversion_factor(self):
+        return (
+            self.volume_correction_factor * self.calorific_value / 3.6
+            if self.meter_type > 1
+            else None
+        )
+
 
 @dataclass
 class Config:
@@ -103,7 +111,8 @@ def extract(api_key, series, from_date, to_date):
     standing_charge = (
         requests.get(series.standing_charge_url, auth=(api_key, ""))
         .json()
-        .get("results", [])[0].get("value_inc_vat", 0)
+        .get("results", [])[0]
+        .get("value_inc_vat", 0)
         if hasattr(series, "standing_charge_url")
         else series.standing_charge
     )
@@ -221,11 +230,7 @@ def main(
         },
         "gas": {
             "unit_rate": config.gas.unit_rate,
-            "conversion_factor": config.gas.volume_correction_factor
-            * config.gas.calorific_value
-            / 3.6
-            if config.gas.meter_type > 1
-            else None,
+            "conversion_factor": config.gas.conversion_factor,
         },
     }
 
