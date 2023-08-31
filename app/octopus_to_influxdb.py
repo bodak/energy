@@ -100,7 +100,7 @@ def extract(api_key, url, from_date, to_date, page=None):
     return results
 
 
-def store_series(connection, version, org, bucket, series, metrics, rate_data):
+def transform(series, metrics, rate_data):
     agile_data = rate_data.get("agile_unit_rates", [])
     agile_rates = {point["valid_to"]: point["value_inc_vat"] for point in agile_data}
 
@@ -179,7 +179,12 @@ def store_series(connection, version, org, bucket, series, metrics, rate_data):
         }
         for measurement in metrics
     ]
-    connection.write(bucket, org, measurements)
+    return measurements
+
+
+def load(connection, config, measurements, series):
+    # connection.write(config.influxdb.bucket, config.influxdb.org, measurements)
+    json.dump(measurements, open(f"{series}.json", "w"))
 
 
 def main(
@@ -194,7 +199,7 @@ def main(
         token=config.influxdb.token,
         org=config.influxdb.org,
     )
-    write_api = influx.write_api(write_options=SYNCHRONOUS)
+    connection = influx.write_api(write_options=SYNCHRONOUS)
 
     rate_data = {
         "electricity": {
@@ -231,13 +236,11 @@ def main(
     # rate_data['electricity']['agile_unit_rates'] = retrieve_paginated_data(
     #     api_key, agile_url, from_iso, to_iso
     # )
-    # store_series(write_api, influx_version, org, bucket, 'electricity', e_consumption, rate_data['electricity'])
-    json.dump(
-        {"use": electricity, "rate": rate_data["electricity"]}, open("elec.json", "w")
-    )
+    electricity = transform("electricity", electricity, rate_data["electricity"])
+    load(connection, config, electricity, "electricity")
     gas = extract(config.octopus.api_key, config.gas.url, from_iso, to_iso)
-    json.dump({"use": gas, "rate": rate_data["gas"]}, open("gas.json", "w"))
-    # store_series(write_api, influx_version, org, bucket, 'gas', g_consumption, rate_data['gas'])
+    gas = transform("gas", gas, rate_data["gas"])
+    load(connection, config, gas, "gas")
 
 
 if __name__ == "__main__":
