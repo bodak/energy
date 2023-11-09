@@ -77,6 +77,7 @@ class Gas:
     def name(self):
         return "gas"
 
+
 @dataclass
 class Config:
     influxdb: InfluxDB
@@ -219,9 +220,7 @@ def main(
     electricity, electricity_charge = extract(
         config.octopus.api_key, config.electricity, from_iso, to_iso
     )
-    electricity = transform(
-        electricity, config.electricity, electricity_charge
-    )
+    electricity = transform(electricity, config.electricity, electricity_charge)
     # prices = extract(
     # config.octopus.api_key, config., from_iso, to_iso
     # )
