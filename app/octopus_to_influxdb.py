@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from urllib import parse
 
 import maya
@@ -43,6 +43,10 @@ class Electricity:
             f"{self.mpan}/meters/{self.serial_number}/consumption/"
         )
 
+    @property
+    def name(self):
+        return "electricity"
+
 
 @dataclass
 class Gas:
@@ -69,6 +73,9 @@ class Gas:
             else None
         )
 
+    @property
+    def name(self):
+        return "gas"
 
 @dataclass
 class Config:
@@ -119,19 +126,16 @@ def extract(api_key, series, from_date, to_date):
     return consumption, standing_charge
 
 
-def transform(series, metrics, rate_data):
-    agile_data = rate_data.get("agile_unit_rates", [])
-    agile_rates = {point["valid_to"]: point["value_inc_vat"] for point in agile_data}
-
+def transform(metrics, config, charge):
     def active_rate_field(measurement):
-        if series == "gas":
+        if config.name == "gas":
             return "unit_rate"
-        elif not rate_data["unit_rate_low_zone"]:  # no low rate
+        elif not config.unit_rate_time_zone:  # no low rate
             return "unit_rate_high"
 
-        low_start_str = rate_data["unit_rate_low_start"]
-        low_end_str = rate_data["unit_rate_low_end"]
-        low_zone = rate_data["unit_rate_low_zone"]
+        low_start_str = config.unit_rate_low_start
+        low_end_str = config.unit_rate_low_end
+        low_zone = config.unit_rate_time_zone
 
         measurement_at = maya.parse(measurement["interval_start"])
 
@@ -153,32 +157,18 @@ def transform(series, metrics, rate_data):
 
     def fields_for_measurement(measurement):
         consumption = measurement["consumption"]
-        conversion_factor = rate_data.get("conversion_factor", None)
+        conversion_factor = asdict(config).get("conversion_factor", None)
         if conversion_factor:
             consumption *= conversion_factor
         rate = active_rate_field(measurement)
-        rate_cost = rate_data[rate]
+        rate_cost = asdict(config)[rate]
         cost = consumption * rate_cost
-        standing_charge = rate_data["standing_charge"] / 48  # 30 minute reads
+        standing_charge = charge / 48  # 30 minute reads
         fields = {
             "consumption": consumption,
             "cost": cost,
             "total_cost": cost + standing_charge,
         }
-        if agile_data:
-            agile_standing_charge = rate_data["agile_standing_charge"] / 48
-            agile_unit_rate = agile_rates.get(
-                maya.parse(measurement["interval_end"]).iso8601(),
-                rate_data[rate],  # cludge, use Go rate during DST changeover
-            )
-            agile_cost = agile_unit_rate * consumption
-            fields.update(
-                {
-                    "agile_rate": agile_unit_rate,
-                    "agile_cost": agile_cost,
-                    "agile_total_cost": agile_cost + agile_standing_charge,
-                }
-            )
         return fields
 
     def tags_for_measurement(measurement):
@@ -191,7 +181,7 @@ def transform(series, metrics, rate_data):
 
     measurements = [
         {
-            "measurement": series,
+            "measurement": config.name,
             "tags": tags_for_measurement(measurement),
             "time": measurement["interval_end"],
             "fields": fields_for_measurement(measurement),
@@ -201,9 +191,9 @@ def transform(series, metrics, rate_data):
     return measurements
 
 
-def load(connection, config, measurements, series):
+def load(connection, config, measurements):
     # connection.write(config.influxdb.bucket, config.influxdb.org, measurements)
-    json.dump(measurements, open(f"{series}.json", "w"))
+    json.dump(measurements, open(f"{measurements[0]['measurement']}.json", "w"))
 
 
 def main(
@@ -220,39 +210,25 @@ def main(
     )
     connection = influx.write_api(write_options=SYNCHRONOUS)
 
-    rate_data = {
-        "electricity": {
-            "unit_rate_high": config.electricity.unit_rate_high,
-            "unit_rate_low": config.electricity.unit_rate_low,
-            "unit_rate_low_start": config.electricity.unit_rate_low_start,
-            "unit_rate_low_end": config.electricity.unit_rate_low_end,
-            "unit_rate_low_zone": config.electricity.unit_rate_time_zone,
-        },
-        "gas": {
-            "unit_rate": config.gas.unit_rate,
-            "conversion_factor": config.gas.conversion_factor,
-        },
-    }
-
     from_iso = maya.when(
         from_date, timezone=config.electricity.unit_rate_time_zone
     ).iso8601()
     to_iso = maya.when(
         to_date, timezone=config.electricity.unit_rate_time_zone
     ).iso8601()
-    electricity, rate_data["electricity"]["standing_charge"] = extract(
+    electricity, electricity_charge = extract(
         config.octopus.api_key, config.electricity, from_iso, to_iso
+    )
+    electricity = transform(
+        electricity, config.electricity, electricity_charge
     )
     # prices = extract(
     # config.octopus.api_key, config., from_iso, to_iso
     # )
-    electricity = transform("electricity", electricity, rate_data["electricity"])
-    load(connection, config, electricity, "electricity")
-    gas, rate_data["gas"]["standing_charge"] = extract(
-        config.octopus.api_key, config.gas, from_iso, to_iso
-    )
-    gas = transform("gas", gas, rate_data["gas"])
-    load(connection, config, gas, "gas")
+    load(connection, config, electricity)
+    gas, gas_charge = extract(config.octopus.api_key, config.gas, from_iso, to_iso)
+    gas = transform(gas, config.gas, gas_charge)
+    load(connection, config, gas)
 
 
 if __name__ == "__main__":
